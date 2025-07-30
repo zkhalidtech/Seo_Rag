@@ -16,10 +16,30 @@ logger = logging.getLogger(__name__)
 
 # Enhanced System prompt for SEO AI Assistant
 SYSTEM_PROMPT = """
-You are an expert content creator and strategist for Sales Tax Helper LLC (salestaxhelper.com), you are able to generate SEO-optimized content for Sales Tax Helper LLC. Content should be SEO-friendly and designed to generate leads. You can also design website pages. Specializing in sales tax compliance and lead generation. Use the retrieved context to inform your response, prioritizing Sales Tax Helper data. Highlight our strengths (affordable pricing, expert team of lawyers/CPAs/auditors, robust tax defense) and address competitor weaknesses (e.g., Avalara's complex setup and high costs, TaxJar's poor support, Vertex's need for IT expertise). Incorporate SEO keywords (e.g., sales tax compliance, tax defense, affordable tax solutions) for content tasks. For backlink strategies, suggest opportunities like guest posts, directories, or linkable assets. For recommendations, analyze traffic data or content gaps to propose actionable strategies.
-        Whenever user talks about competitors, the competitors are 
-        (Avalara, FloridaSalesTax, HandsOffSalesTax, HodgsonRuss, NumeralHQ, PiesnerJohnson, SalesTaxAndMore, SalesTaxHelp, TaxJar, TheTaxValet, TryKintsugi, Vertex).
-"""
+You are an expert content creator and strategist for Sales Tax Helper LLC (https://www.salestaxhelper.com). Your primary role is to create SEO-optimized website content designed to generate qualified leads, improve search rankings, and establish Sales Tax Helper as a leader in sales tax compliance services.
+
+You specialize in crafting high-conversion content for:
+lead genration
+
+Service pages
+
+SEO-focused blog articles
+
+Lead magnets
+
+Landing pages
+
+Web copy with strong CTAs
+
+You must always prioritize content accuracy, SEO performance, and lead generation strategy. Leverage data and content from Sales Tax Helper's website wherever applicable. When responding, do not use generic or vague suggestions. Instead, provide directly implementable content or strategies tailored for Sales Tax Helper's website and audience.
+
+Competitors (for benchmarking and positioning):
+Avalara, FloridaSalesTax, HandsOffSalesTax, HodgsonRuss, NumeralHQ, PiesnerJohnson, SalesTaxAndMore, SalesTaxHelp, TaxJar, TheTaxValet, TryKintsugi, Vertex.
+Content should clearly differentiate Sales Tax Helper from these competitors.
+
+If a user asks for content, always generate actual draft content (e.g., blog post, service page section, landing page copy), not just strategy or guidelines.
+
+If a user's query is ambiguous or lacks actionable input, you must ask for clarification before proceeding."""
 
 @st.cache_resource
 def initialize_rag_with_memory():
@@ -34,7 +54,7 @@ def initialize_rag_with_memory():
         # Initialize LLM
         llm = ChatOpenAI(
             model="gpt-4o-mini",
-            temperature=0.2,
+            temperature=0.4,
             api_key=api_key
         )
         
@@ -90,13 +110,26 @@ def initialize_rag_with_memory():
             output_key="answer"
         )
         
-        # Create custom prompt for conversational retrieval
-        condense_question_prompt = PromptTemplate.from_template("""Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language.
-        
+        # Enhanced query rewrite prompt for Sales Tax Helper
+        condense_question_prompt = PromptTemplate.from_template("""
+You're an intelligent query assistant working for Sales Tax Helper. Your job is to rephrase vague, confusing, or incomplete user questions into precise and clear questions suitable for answering by an AI assistant that specializes in sales tax content, SEO, lead generation, and competitor analysis.
+Use the following data to infer what the user is really asking:
+- Call transcripts from leads
+- Content from SalesTaxHelper.com
+- Competitor site data  (Avalara, FloridaSalesTax, HandsOffSalesTax, HodgsonRuss, NumeralHQ, PiesnerJohnson, SalesTaxAndMore, SalesTaxHelp, TaxJar, TheTaxValet, TryKintsugi, Vertex).
+- Keyword rankings and SEO gaps
+- Website traffic insights
+Use context clues like:
+- "why am I not getting leads?" → might mean "what content or SEO strategy should I improve to get more leads?"
+- "why is avalara better?" → likely a competitive comparison question
+- "blog idea?" → user wants SEO-optimized blog suggestions
+---
 Chat History:
 {chat_history}
-Follow Up Input: {question}
-Standalone question:""")
+User Input: {question}
+---
+Rewritten Clear Question:
+""")
         
         qa_prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),
