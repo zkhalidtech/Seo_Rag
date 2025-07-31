@@ -1,50 +1,102 @@
 import streamlit as st
 import os
 import pandas as pd
-from typing import List
+from typing import List, Dict, Any
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationSummaryBufferMemory
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain.schema import Document
 import pickle
 import logging
+import json
+from datetime import datetime
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Enhanced System prompt for SEO AI Assistant
-SYSTEM_PROMPT = """
-You are an expert content creator and strategist for Sales Tax Helper LLC. Your primary role is to create SEO-optimized website content designed to generate qualified leads, improve search rankings, and establish Sales Tax Helper as a leader in sales tax compliance services.
+# Enhanced System prompt for actionable SEO AI Assistant
+SYSTEM_PROMPT = """You are an expert SEO Content Strategist and Implementation Specialist for Sales Tax Helper LLC. Your role is to analyze, create, and provide SPECIFIC, ACTIONABLE content and improvements.
 
-You specialize in crafting high-conversion content for:
-lead genration
+CRITICAL INSTRUCTIONS:
+1. ALWAYS provide actual content, not suggestions
+2. When asked about improvements, give EXACT text to replace current content
+3. Include specific HTML/CSS when relevant
+4. Reference exact page URLs and sections
+5. Write in first person as if you ARE the business owner
 
-Service pages
+Your knowledge base includes:
+- Sales Tax Helper website content and structure
+- Competitor analysis from: Avalara, TaxJar, Vertex, etc.
+- SEMRush keyword data and rankings
+- Google Analytics user behavior data
+- Call transcripts from actual leads
 
-SEO-focused blog articles
+RESPONSE FORMAT:
+- For content requests: Write the FULL content piece
+- For improvements: Provide BEFORE/AFTER comparisons
+- For technical issues: Give exact code snippets
+- For strategy: Include specific KPIs and timelines
 
-Lead magnets
+EXAMPLE RESPONSES:
 
-Landing pages
+Bad Response: "You should improve your homepage headline"
+Good Response: "Replace your current headline 'Welcome to Sales Tax Helper' with: 'Save $50,000+ Annually on Sales Tax Compliance - Get Your Free Tax Nexus Analysis in 24 Hours'"
 
-Web copy with strong CTAs
+Bad Response: "Add more CTAs to your service page"
+Good Response: "Add this CTA after paragraph 3 on /services/nexus-analysis:
+<div class='cta-box'>
+  <h3>Stop Overpaying on Sales Tax</h3>
+  <p>Our clients save an average of $4,200/month. See your potential savings:</p>
+  <button onclick='openCalendly()'>Get Free Tax Analysis →</button>
+</div>"
 
-If the user asks vague or indirect questions like “why is this happening” (e.g., “I’m not getting leads”), do not use uncertain language like “maybe,” “possibly,” or “it could be.” Instead, analyze the context and data to provide a direct, confident, and specific reason based on known issues such as poor content, weak CTAs, lack of backlinks, keyword gaps, or competitor advantages.  
-You must always prioritize content accuracy, SEO performance, and lead generation strategy. Leverage data and content from Sales Tax Helper's website wherever applicable. When responding, do not use generic or vague suggestions. Instead, provide directly implementable content or strategies tailored for Sales Tax Helper's website and audience.
+When analyzing issues:
+- Reference specific competitor advantages with data
+- Cite exact keyword gaps and search volumes
+- Quote actual customer pain points from call transcripts
+- Provide conversion rate benchmarks
 
-Competitors (for benchmarking and positioning):
-Avalara, FloridaSalesTax, HandsOffSalesTax, HodgsonRuss, NumeralHQ, PiesnerJohnson, SalesTaxAndMore, SalesTaxHelp, TaxJar, TheTaxValet, TryKintsugi, Vertex.
-Content should clearly differentiate Sales Tax Helper from these competitors.
+Remember: You're not an advisor - you're the implementation expert who writes the actual content and code."""
 
-If a user asks for content, always generate actual draft content (e.g., blog post, service page section, landing page copy), not just strategy or guidelines.
+# Additional prompt for content analysis
+CONTENT_ANALYSIS_PROMPT = """Based on the retrieved context, analyze the following aspects:
+1. Current content weaknesses compared to top 3 competitors
+2. Missing keywords with search volume > 1000/month
+3. Conversion optimization opportunities
+4. Technical SEO issues
 
-If a user's query is ambiguous or lacks actionable input, you must ask for clarification before proceeding."""
+Provide specific fixes with exact implementation details."""
+
+def get_enhanced_retriever(vectorstore):
+    """Create an enhanced retriever with better search capabilities"""
+    return vectorstore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={
+            "k": 15,
+            "score_threshold": 0.3,
+            "fetch_k": 30
+        }
+    )
+
+def format_context_with_metadata(docs: List[Document]) -> str:
+    """Format retrieved documents with their metadata for better context"""
+    formatted_docs = []
+    for i, doc in enumerate(docs):
+        metadata_str = json.dumps(doc.metadata, indent=2)
+        formatted_docs.append(f"""
+Document {i+1}:
+Source: {doc.metadata.get('file', 'Unknown')}
+Content: {doc.page_content}
+Metadata: {metadata_str}
+---""")
+    return "\n".join(formatted_docs)
 
 @st.cache_resource
 def initialize_rag_with_memory():
-    """Initialize the RAG system with memory capabilities"""
+    """Initialize the RAG system with enhanced memory and retrieval capabilities"""
     try:
         # Get API key from Streamlit secrets
         api_key = st.secrets.get("OPENAI_API_KEY")
@@ -52,11 +104,12 @@ def initialize_rag_with_memory():
             st.error("OpenAI API key not found in secrets. Please add OPENAI_API_KEY to your Streamlit secrets.")
             return None, None
         
-        # Initialize LLM
+        # Initialize LLM with higher temperature for more creative content
         llm = ChatOpenAI(
-            model="gpt.1",
-            temperature=0.4,
-            api_key=api_key
+            model="gpt-4.1",  # Using GPT-4 for better quality
+            temperature=0.7,
+            api_key=api_key,
+            max_tokens=2000  # Allow longer responses
         )
         
         # Initialize embeddings
@@ -72,18 +125,7 @@ def initialize_rag_with_memory():
             st.error("FAISS index not found. Please ensure the vector database is properly set up.")
             return None, None
         
-        # List files in the directory for debugging
-        index_files = os.listdir(faiss_index_path)
-        logger.info(f"Files in FAISS directory: {index_files}")
-        
-        # Check for required FAISS files
-        required_files = ['index.faiss', 'index.pkl']
-        missing_files = [f for f in required_files if f not in index_files]
-        if missing_files:
-            st.error("Vector database files are incomplete. Please contact support.")
-            return None, None
-        
-        # Try to load FAISS index
+        # Load FAISS index
         try:
             logger.info("Loading existing FAISS index...")
             vectorstore = FAISS.load_local(
@@ -96,13 +138,10 @@ def initialize_rag_with_memory():
             logger.error(f"FAISS loading error: {str(faiss_error)}")
             return None, None
         
-        # Create retriever
-        retriever = vectorstore.as_retriever(
-            search_type="mmr", 
-            search_kwargs={"k": 10, "fetch_k": 20}
-        )
+        # Create enhanced retriever
+        retriever = get_enhanced_retriever(vectorstore)
         
-        # Initialize memory
+        # Initialize memory with higher token limit
         memory = ConversationSummaryBufferMemory(
             llm=llm,
             max_token_limit=2000,
@@ -111,50 +150,62 @@ def initialize_rag_with_memory():
             output_key="answer"
         )
         
-        # Enhanced query rewrite prompt for Sales Tax Helper
+        # Enhanced query rewrite prompt
         condense_question_prompt = PromptTemplate.from_template("""
-You're an intelligent query assistant working for Sales Tax Helper. Your job is to rephrase vague, confusing, or incomplete user questions into precise and clear questions suitable for answering by an AI assistant that specializes in sales tax content, SEO, lead generation, and competitor analysis.
-Use the following data to infer what the user is really asking:
-- Call transcripts from leads
-- Content from SalesTaxHelper.com
-- Competitor site data  (Avalara, FloridaSalesTax, HandsOffSalesTax, HodgsonRuss, NumeralHQ, PiesnerJohnson, SalesTaxAndMore, SalesTaxHelp, TaxJar, TheTaxValet, TryKintsugi, Vertex).
-- Keyword rankings and SEO gaps
-- Website traffic insights
-Use context clues like:
-- "why am I not getting leads?" → might mean "what content or SEO strategy should I improve to get more leads?"
-- "why is avalara better?" → likely a competitive comparison question
-- "blog idea?" → user wants SEO-optimized blog suggestions
----
+You are analyzing a query for Sales Tax Helper's AI system. Your job is to expand vague queries into specific, actionable requests.
+
+Context available in the system:
+- Sales Tax Helper website pages and content
+- Competitor content and strategies
+- SEMRush data: keyword rankings, gaps, search volumes
+- Google Analytics: user behavior, conversion rates
+- Call transcripts: customer pain points, objections
+
+Query transformation rules:
+- "improve my homepage" → "analyze my homepage content against top 3 competitors and rewrite the hero section with higher-converting copy"
+- "why no leads?" → "identify specific content gaps causing low conversions and provide replacement content"
+- "blog ideas" → "generate 5 high-traffic blog titles based on keyword gaps and write the introduction for the top one"
+- "fix my CTA" → "analyze current CTAs, benchmark against competitors, and provide 3 new CTA variations with A/B test plan"
+
 Chat History:
 {chat_history}
-User Input: {question}
----
-Rewritten Clear Question:
-""")
+
+Original Query: {question}
+
+Rewritten Specific Query:""")
         
+        # Enhanced QA prompt with examples
         qa_prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),
-            ("human", """Context: {context}
+            ("human", """Context from knowledge base:
+{context}
 
 Chat History: {chat_history}
 
-Question: {question}
+User Query: {question}
 
-Please provide a comprehensive answer based on the context and conversation history. Reference previous discussions when relevant.""")
+Instructions:
+1. Use the context to provide SPECIFIC, IMPLEMENTABLE solutions
+2. Reference exact data points from the context
+3. Write actual content, not just suggestions
+4. Include metrics and timelines where relevant
+5. Format response for immediate implementation
+
+Your response:""")
         ])
         
-        # Create conversational retrieval chain
+        # Create conversational retrieval chain with custom formatting
         qa_chain = ConversationalRetrievalChain.from_llm(
             llm=llm,
             retriever=retriever,
             memory=memory,
             condense_question_prompt=condense_question_prompt,
             combine_docs_chain_kwargs={"prompt": qa_prompt},
-            return_source_documents=False,  # Don't return source documents
-            verbose=False  # Disable verbose logging for cleaner deployment
+            return_source_documents=True,  # Return sources for transparency
+            verbose=False
         )
         
-        logger.info("RAG system with memory initialized successfully!")
+        logger.info("Enhanced RAG system initialized successfully!")
         return qa_chain, memory
     
     except Exception as e:
@@ -162,19 +213,67 @@ Please provide a comprehensive answer based on the context and conversation hist
         logger.error(f"RAG initialization error: {str(e)}", exc_info=True)
         return None, None
 
+def display_sources(source_documents):
+    """Display source documents in an expandable section"""
+    if source_documents:
+        with st.expander("📚 Sources Used", expanded=False):
+            for i, doc in enumerate(source_documents[:5]):  # Show top 5 sources
+                st.markdown(f"**Source {i+1}:** {doc.metadata.get('file', 'Unknown')}")
+                st.text(doc.page_content[:200] + "...")
+
 def main():
     st.set_page_config(
-        page_title="Sales Tax Helper AI Assistant",
-        page_icon="🏢",
-        layout="centered"
+        page_title="Sales Tax Helper AI - Content & SEO Specialist",
+        page_icon="🚀",
+        layout="wide"
     )
     
-    # Header
-    st.title("🏢 Sales Tax Helper AI Assistant")
-    st.markdown("Generate content, analyze strategies, and get expert guidance on sales tax compliance and lead generation.")
+    # Custom CSS for better UI
+    st.markdown("""
+    <style>
+    .main-header {
+        text-align: center;
+        padding: 2rem 0;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+    }
+    .stButton>button {
+        background-color: #667eea;
+        color: white;
+        border-radius: 5px;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+        transition: all 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #764ba2;
+        transform: translateY(-2px);
+    }
+    .example-query {
+        background-color: #f0f2f6;
+        padding: 0.5rem 1rem;
+        border-radius: 5px;
+        margin: 0.5rem 0;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .example-query:hover {
+        background-color: #e0e2e6;
+        transform: translateX(5px);
+    }
+    </style>
+    """, unsafe_allow_html=True)
     
-    # Add a divider
-    st.divider()
+    # Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>🚀 Sales Tax Helper AI Assistant</h1>
+        <p>Get instant, actionable content and SEO improvements based on real data</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Initialize the RAG system
     qa_chain, memory = initialize_rag_with_memory()
@@ -190,47 +289,66 @@ def main():
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
-    # Display chat messages from history on app rerun
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    # Sidebar with example queries
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 📊 Data Sources")
+        st.markdown("""
+        - ✅ Sales Tax Helper website
+        - ✅ Competitor analysis
+        - ✅ SEMRush keyword data
+        - ✅ Customer call transcripts
+        """)
+    
+    # Main chat interface
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # Display chat messages from history
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                if "sources" in message:
+                    display_sources(message["sources"])
+    
+    # Handle example query selection
+    if "next_query" in st.session_state:
+        query_to_process = st.session_state.next_query
+        del st.session_state.next_query
+    else:
+        query_to_process = st.chat_input("Ask for specific content, improvements, or analysis...")
     
     # React to user input
-    if prompt := st.chat_input("Ask me about SEO strategy, content generation, backlinks, or lead acquisition..."):
-        # Display user message in chat message container
-        st.chat_message("user").markdown(prompt)
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    if query_to_process:
+        # Display user message
+        with col1:
+            st.chat_message("user").markdown(query_to_process)
+        st.session_state.messages.append({"role": "user", "content": query_to_process})
         
         # Generate response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    # Use the chain with memory
-                    result = qa_chain.invoke({"question": prompt})
-                    response = result['answer']
-                    
-                    st.markdown(response)
-                    
-                    # Add assistant response to chat history
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                    
-                except Exception as e:
-                    error_message = "I'm sorry, I encountered an error processing your request. Please try again or contact support if the issue persists."
-                    st.error(error_message)
-                    st.session_state.messages.append({"role": "assistant", "content": error_message})
-                    logger.error(f"Query processing error: {str(e)}", exc_info=True)
+        with col1:
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing data and generating content..."):
+                    try:
+                        # Use the chain with memory
+                        result = qa_chain.invoke({"question": query_to_process})
+                        response = result['answer']
+
+                        
+                        st.markdown(response)
+                        # Add assistant response to chat history
+                        st.session_state.messages.append({
+                            "role": "assistant", 
+                            "content": response,
+                        })
+                        
+                    except Exception as e:
+                        error_message = "I encountered an error. Please try rephrasing your question or contact support."
+                        st.error(error_message)
+                        st.session_state.messages.append({"role": "assistant", "content": error_message})
+                        logger.error(f"Query processing error: {str(e)}", exc_info=True)
     
-    # Add a clear chat button at the bottom
-    if st.session_state.messages:
-        st.divider()
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            if st.button("🗑️ Clear Chat", type="secondary"):
-                st.session_state.messages = []
-                if hasattr(st.session_state, 'conversation_memory'):
-                    st.session_state.conversation_memory.clear()
-                st.rerun()
+
 
 if __name__ == "__main__":
     main()
