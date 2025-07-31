@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Enhanced System prompt for SEO AI Assistant
 SYSTEM_PROMPT = """
-You are an expert content creator and strategist for Sales Tax Helper LLC (https://www.salestaxhelper.com). Your primary role is to create SEO-optimized website content designed to generate qualified leads, improve search rankings, and establish Sales Tax Helper as a leader in sales tax compliance services.
+You are an expert content creator and strategist for Sales Tax Helper LLC. Your primary role is to create SEO-optimized website content designed to generate qualified leads, improve search rankings, and establish Sales Tax Helper as a leader in sales tax compliance services.
 
 You specialize in crafting high-conversion content for:
 lead genration
@@ -54,7 +54,7 @@ def initialize_rag_with_memory():
         
         # Initialize LLM
         llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model="gpt.1",
             temperature=0.4,
             api_key=api_key
         )
